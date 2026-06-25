@@ -105,7 +105,7 @@ while True:
                         'steps': [
                             {'range': [-3, -0.5], 'color': "red"},
                             {'range': [-0.5, 0.5], 'color': "green"},
-                            {'range': 0.5, 3', 'color': "orange"}
+                            {'range': [0.5, 3], 'color': "orange"}
                         ],
                     }
                 ))
