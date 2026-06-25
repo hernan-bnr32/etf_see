@@ -1,4 +1,5 @@
 import streamlit as st
+import os; os.system("pip install yfinance pandas plotly")
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
