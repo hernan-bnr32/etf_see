@@ -1,12 +1,30 @@
-# 1. 무조건 맨 위에서 패키지 설치부터 완료합니다. (가장 중요)
 import os
-try:
-    import yfinance as yf
-except ImportError:
-    os.system("pip install yfinance pandas plotly")
+import sys
 
-# 2. 설치가 보장된 상태에서 안전하게 라이브러리들을 불러옵니다.
+# 1. 필요한 모든 패키지가 있는지 검사하고, 하나라도 없으면 즉시 강제 설치 후 시스템을 리로드합니다.
+required_modules = ["yfinance", "pandas", "plotly", "streamlit"]
+missing_modules = []
+
+for module in required_modules:
+    try:
+        if module == "plotly":
+            import plotly
+        elif module == "yfinance":
+            import yfinance
+        elif module == "pandas":
+            import pandas
+    except ImportError:
+        missing_modules.append(module)
+
+if missing_modules:
+    # 누락된 부품들을 시장(pip)에서 한꺼번에 다운로드하여 설치합니다.
+    os.system(f"pip install {' '.join(missing_modules)}")
+    # 설치 완료 후 파이썬 프로그램이 새 부품을 완벽히 인식하도록 강제 새로고침(재실행)합니다.
+    os.execv(sys.executable, ['python'] + sys.argv)
+
+# 2. 이제 안전하게 라이브러리들을 불러옵니다.
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import time
@@ -16,7 +34,7 @@ from datetime import datetime
 st.set_page_config(page_title="실시간 ETF 괴리율 레이더", layout="wide", initial_sidebar_state="expanded")
 
 st.title("📡 실시간 ETF 괴리율 & 웩더독 모니터링 시스템")
-st.markdown("본 대시보드는 2초마다 자동 새로고침되며, ETF 가격과 실제 자산가치 간의 괴리를 실시간 추적합니다.")
+st.markdown("본 대시보드는 자동 새로고침되며, ETF 가격과 실제 자산가치 간의 괴리를 실시간 추적합니다.")
 
 # 4. 사이드바 - 새로고침 주기 및 감시 종목 설정
 with st.sidebar:
