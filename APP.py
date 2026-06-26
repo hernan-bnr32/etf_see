@@ -7,14 +7,14 @@ import time
 from datetime import datetime
 import pytz
 
-# 1. 기본 페이지 구성
+# 1. 페이지 레이아웃 설정
 st.set_page_config(
-    page_title="글로벌 매크로", 
+    page_title="글로벌 매크로 레이더", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
 
-# 2. 캐시 세션 초기화
+# 2. 세션 상태 캐시 초기화
 if "macro_cache" not in st.session_state:
     st.session_state.macro_cache = {
         "kospi": {"price": 2700.0, "rate": 0.0},
@@ -25,7 +25,7 @@ if "macro_cache" not in st.session_state:
 if "stock_cache" not in st.session_state:
     st.session_state.stock_cache = {}
 
-# 3. 네이버 실시간 주가 API 수집 (안전 분할)
+# 3. 네이버 실시간 주가 API 수집 (하락 부호 '-' 처리 정밀 보완)
 def get_naver_multi_prices_safe(codes_list):
     query_str = ",".join([f"SERVICE_ITEM:{c}" for c in codes_list])
     base_url = "https://polling.finance.naver.com/api/realtime"
@@ -38,7 +38,15 @@ def get_naver_multi_prices_safe(codes_list):
         for item in raw_datas:
             c = item['cd']
             price = float(item['nv']) if item.get('nv') is not None else 0.0
-            rate = float(item['cr']) if item.get('cr') is not None else 0.0
+            
+            # 💡 네이버 API 특성 보완: 전일대비 등락구분코드(rf) 가 4 또는 5이면 '하락/하한가'이므로 마이너스 처리
+            raw_rate = float(item['cr']) if item.get('cr') is not None else 0.0
+            rf_code = str(item.get('rf', ''))
+            if rf_code in ['4', '5'] and raw_rate > 0:
+                rate = -raw_rate
+            else:
+                rate = raw_rate
+                
             nav = float(item['nav']) if 'nav' in item and item['nav'] is not None else None
             if price > 0:
                 st.session_state.stock_cache[c] = {
@@ -50,10 +58,9 @@ def get_naver_multi_prices_safe(codes_list):
         pass
     return st.session_state.stock_cache
 
-# 4. 국내 지수 파싱 (문자열 잘림 절대 안 나게 라인 슬라이싱)
+# 4. 국내 지수 파싱
 def fetch_naver_index_safe():
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
     # 코스피
     try:
         kp_url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
@@ -132,7 +139,7 @@ with st.sidebar:
     target_name = st.selectbox(
         "감시할 종목/ETF 선택", 
         [
-           "KODEX 200 (069500)",
+            "KODEX 200 (069500)",
             "삼성전자 (005930)",
             "카카오뱅크 (323410)",
             "KODEX 미국반도체MV (390390)",
@@ -216,7 +223,6 @@ while True:
             
             is_etf = nav is not None and nav > 0
             
-            # 긴 수식을 여러 줄로 완전히 분할하여 잘림 방지
             if is_etf:
                 diff = price - nav
                 disparity_rate = round((diff / nav) * 100, 2)
@@ -254,7 +260,6 @@ while True:
                 else:
                     st.metric(label="🔍 실시간 괴리율", value="N/A")
             
-            # 하단 텍스트 한 줄 분할 완료
             st.markdown(
                 "<p style='text-align: right; color: gray; font-size: 12px; margin-top: -10px;'>📊 출처: Naver Finance Feed & Yahoo Finance API</p>", 
                 unsafe_allow_html=True
