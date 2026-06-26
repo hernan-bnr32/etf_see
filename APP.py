@@ -147,4 +147,4 @@ while True:
     # 💡 무한루프 중복 ID 에러(DuplicateElementId)를 근본적으로 해결하는 고유 타임스탬프 키 생성
     loop_key = str(int(time.time() * 1000))
     
-    with placeholder
+    with placeholder:
