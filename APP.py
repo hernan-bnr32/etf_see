@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
-import yfinance as yf  # 💡 매크로 수집용 야후 파이낸스 라이브러리 추가
+import yfinance as yf
 import plotly.graph_objects as go
 import time
 from datetime import datetime
@@ -10,7 +10,7 @@ import pytz
 # 페이지 기본 설정
 st.set_page_config(page_title="글로벌 매크로 & ETF 실시간 종합 관제 레이더", layout="wide", initial_sidebar_state="expanded")
 
-# 💡 세션 상태 캐싱 (네트워크 지연 대비 안정성 확보)
+# 💡 세션 상태 캐싱 (네트워크 단절 대비 백업용)
 if "macro_cache" not in st.session_state:
     st.session_state.macro_cache = {
         "kospi": {"price": 2700.0, "rate": 0.0},
@@ -21,12 +21,11 @@ if "macro_cache" not in st.session_state:
 if "stock_cache" not in st.session_state:
     st.session_state.stock_cache = {}
 
-# 💡 [기존 유지] 네이버 실시간 개별 종목 API 수집 함수
+# 💡 [안정화] 네이버 실시간 개별 종목 API 수집 함수
 def get_naver_multi_prices_safe(codes_list):
     query_str = ",".join([f"SERVICE_ITEM:{c}" for c in codes_list])
     url = f"https://polling.finance.naver.com/api/realtime?query={query_str}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
     try:
         response = requests.get(url, headers=headers, timeout=3)
         data = response.json()
@@ -35,64 +34,79 @@ def get_naver_multi_prices_safe(codes_list):
             price = float(item['nv']) if item.get('nv') is not None else 0.0
             rate = float(item['cr']) if item.get('cr') is not None else 0.0
             nav = float(item['nav']) if 'nav' in item and item['nav'] is not None else None
-            
             if price > 0:
                 st.session_state.stock_cache[c] = {"price": price, "rate": rate, "nav": nav}
     except:
         pass
     return st.session_state.stock_cache
 
-# 💡 [새로운 엔진] 야후 파이낸스 기반 매크로 수집 함수 (차단 원천 봉쇄)
-def get_macro_indicators_yahoo():
+# 💡 [믹스 패치] 국내 지수는 네이버 실시간 크롤링 / 해외 지수는 야후 파이낸스 결합
+def get_hybrid_macro_indicators():
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    
+    # 1. 국내 지수 (코스피, 환율) - 네이버 개별 시세 웹 피드로 실시간 수집 (차단 회피형)
     try:
-        # 야후 파이낸스 티커 지정
-        # ^KS11: 코스피, USDKRW=X: 원달러 환율, CL=F: WTI 유가, ^SOX: 필라델피아 반도체(TACO 대용)
-        tickers = {"kospi": "^KS11", "usd_krw": "USDKRW=X", "wti": "CL=F", "taco": "^SOX"}
+        # 코스피 실시간 수집
+        kospi_url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
+        res_kp = requests.get(kospi_url, headers=headers, timeout=2)
+        if res_kp.status_code == 200:
+            p_now = res_kp.text.split('id="now_value">')[1].split('<')[0].replace(",", "")
+            p_rate = res_kp.text.split('id="change_value_and_rate">')[1].split('%')[0].split()[-1].replace("+", "")
+            st.session_state.macro_cache["kospi"] = {"price": float(p_now), "rate": float(p_rate)}
+            
+        # 원달러 환율 실시간 수집
+        fx_url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+        res_fx = requests.get(fx_url, headers=headers, timeout=2)
+        if res_fx.status_code == 200:
+            f_now = res_fx.text.split('class="value">')[1].split('<')[0].replace(",", "")
+            f_rate = res_fx.text.split('class="change">')[1].split('<')[0].strip().replace(",", "").replace("원", "")
+            # 전일대비 비율 계산 보정
+            f_price = float(f_now)
+            f_change = float(f_rate)
+            f_prev = f_price - f_change if "-" not in res_fx.text else f_price + f_change
+            f_rate_pct = round((f_change / f_prev) * 100, 2)
+            if "🔴" in res_fx.text or "상승" in res_fx.text:
+                f_rate_pct = +f_rate_pct
+            else:
+                f_rate_pct = -f_rate_pct
+            st.session_state.macro_cache["usd_krw"] = {"price": f_price, "rate": f_rate_pct}
+    except:
+        pass # 실패 시 캐시값 유지
         
+    # 2. 해외 지수 (WTI 유가, 필라델피아 반도체) - 안정적인 야후 파이낸스 엔진 활용
+    try:
+        tickers = {"wti": "CL=F", "taco": "^SOX"}
         for key, ticker_symbol in tickers.items():
             ticker = yf.Ticker(ticker_symbol)
-            # 가장 최신의 1일 데이터 추출
             todays_data = ticker.history(period='1d')
-            
             if not todays_data.empty:
                 current_price = todays_data['Close'].iloc[-1]
                 prev_price = todays_data['Open'].iloc[-1] if 'Open' in todays_data else current_price
-                
-                # 등락률 계산
                 change_rate = round(((current_price - prev_price) / prev_price) * 100, 2) if prev_price != 0 else 0.0
-                
-                # 원/달러 환율의 경우 야후 파이낸스는 소수점 4자리까지 표기되므로 가독성 보정
-                if key == "usd_krw":
-                    current_price = round(current_price, 2)
-                    
-                st.session_state.macro_cache[key] = {
-                    "price": round(current_price, 2),
-                    "rate": change_rate
-                }
-    except Exception as e:
-        pass # 에러 발생 시 기존 캐시 데이터 유지
+                st.session_state.macro_cache[key] = {"price": round(current_price, 2), "rate": change_rate}
+    except:
+        pass
         
     return st.session_state.macro_cache
 
 # --- 데이터 초기 로드 ---
-macro = get_macro_indicators_yahoo()
+macro = get_hybrid_macro_indicators()
 
-# --- 대시보드 상단 글로벌 매크로 판넬 (야후 파이낸스 연동) ---
-st.markdown("### 🌐 글로벌 거시경제 및 시황 판넬 (Yahoo Finance Engine)")
+# --- 대시보드 상단 글로벌 매크로 판넬 ---
+st.markdown("### 🌐 글로벌 거시경제 및 시황 판넬")
 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 with m_col1:
-    st.metric(label="📉 KOSPI 코스피 지수", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
+    st.metric(label="⚡ KOSPI 코스피 지수 (실시간)", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
 with m_col2:
-    st.metric(label="💵 원/달러 환율", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
+    st.metric(label="💵 원/달러 환율 (실시간)", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
 with m_col3:
-    # 💡 요청하신 유가 선물 월물(근월물인 8월물 기준) 정보 명시 완료
-    st.metric(label="🛢️ WTI 국제유가 (26년 8월물 선물)", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
+    st.metric(label="🛢️ WTI 국제유가 (26년 8월물 선물) [15분지연]", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
 with m_col4:
-    st.metric(label="🌮 TACO (Phila 반도체 지수)", value=f"{macro['taco']['price']:,} pt", delta=f"{macro['taco']['rate']}%")
+    st.metric(label="🌮 TACO (Phila 반도체 지수) [15분지연]", value=f"{macro['taco']['price']:,} pt", delta=f"{macro['taco']['rate']}%")
 
 st.markdown("---")
 
-# --- 하단 개별 종목 실시간 레이더 (기존 완벽 유지) ---
+# --- 하단 개별 종목 실시간 레이더 ---
 st.title("📡 선택 종목 실시간 괴리율 & 변동성 종합 레이더")
 
 # 사이드바 설정
@@ -131,13 +145,12 @@ placeholder = st.empty()
 
 while True:
     with placeholder.container():
-        # 개별 타깃 종목 수집 및 상단 매크로 지표 병렬 갱신
         single_stock = get_naver_multi_prices_safe([code])
-        macro = get_macro_indicators_yahoo()
+        macro = get_hybrid_macro_indicators()
         
         local_tz = pytz.timezone('Asia/Seoul')
         current_time_str = datetime.now(local_tz).strftime("%H:%M:%S")
-        ts_key = str(int(time.time() * 1000)) # 중복 키 충돌 방지용 태그
+        ts_key = str(int(time.time() * 1000))
         
         if code in single_stock and single_stock[code]["price"] > 0:
             price = int(single_stock[code]["price"])
@@ -147,7 +160,6 @@ while True:
             is_etf = nav is not None and nav > 0
             disparity_rate = round(((price - nav) / nav) * 100, 2) if is_etf else 0.0
             
-            # 주가 이력 축적
             if not st.session_state.price_history or st.session_state.price_history[-1] != price or len(st.session_state.price_history) < 2:
                 st.session_state.price_history.append(price)
                 st.session_state.time_history.append(current_time_str)
@@ -169,10 +181,18 @@ while True:
                     st.metric(label=f"🔍 실시간 괴리율 ({status_disparity})", value=f"{disparity_rate} %", delta=f"{disparity_rate}%", delta_color="inverse")
                 else:
                     st.metric(label="🔍 실시간 괴리율", value="N/A")
+            
+            # 💡 [요청사항 반영] 레이더 전광판 하단에 명확한 데이터 출처(Source) 기입 완료
+            st.markdown(
+                "<p style='text-align: right; color: gray; font-size: 12px; margin-top: -10px;'>"
+                "📊 데이터 출처: 개별 종목 및 괴리율 (Naver Finance 실시간 Feed) | 매크로 해외 지수 (Yahoo Finance API)"
+                "</p>", 
+                unsafe_allow_html=True
+            )
                 
             st.markdown("---")
             
-            # 좌측(차트), 우측(종합 게이지 패널) 배치
+            # 레이아웃 배치
             col1, col2 = st.columns([2, 1])
             with col1:
                 st.markdown("### 📈 실시간 주가 추이 (정밀 누적)")
@@ -191,43 +211,4 @@ while True:
                         fig_gauge1 = go.Figure(go.Indicator(
                             mode = "gauge+number",
                             value = disparity_rate,
-                            domain = {'x': [0, 1], 'y': [0, 1]},
-                            gauge = {
-                                'axis': {'range': [-2, 2]},
-                                'bar': {'color': "white"},
-                                'steps': [
-                                    {'range': [-2, -0.5], 'color': "navy"},
-                                    {'range': [-0.5, 0.5], 'color': "forestgreen"},
-                                    {'range': [0.5, 2], 'color': "crimson"}
-                                ],
-                            }
-                        ))
-                        fig_gauge1.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
-                        st.plotly_chart(fig_gauge1, use_container_width=True, key=f"g_disp_{ts_key}")
-                    else:
-                        st.info("ETF 전용 지표\n(일반 주식은 NAV가 없습니다)")
-                
-                with g_col2:
-                    st.markdown("##### 🛑 변동성 리스크 게이지")
-                    fig_gauge2 = go.Figure(go.Indicator(
-                        mode = "gauge+number",
-                        value = fluctuation_rate,
-                        domain = {'x': [0, 1], 'y': [0, 1]},
-                        gauge = {
-                            'axis': {'range': [-5, 5]},
-                            'bar': {'color': "white"},
-                            'steps': [
-                                {'range': [-5, -1.5], 'color': "crimson"},
-                                {'range': [-1.5, 1.5], 'color': "forestgreen"},
-                                {'range': [1.5, 5], 'color': "darkorange"}
-                            ],
-                        }
-                    ))
-                    fig_gauge2.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
-                    st.plotly_chart(fig_gauge2, use_container_width=True, key=f"g_fluc_{ts_key}")
-                
-            st.caption(f"동기화 시간: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 야후 파이낸스 피드 동기화")
-        else:
-            st.warning("데이터 동기화 중입니다. 잠시만 기다려주세요...")
-            
-    time.sleep(refresh_rate)
+                            domain = {'x
