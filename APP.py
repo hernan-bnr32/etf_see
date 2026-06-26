@@ -1,16 +1,15 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
+import requests
 import plotly.graph_objects as go
 import time
-import re
 from datetime import datetime
 
 # 페이지 기본 설정
-st.set_page_config(page_title="실시간 ETF 괴리율 레이더", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="국내 상장 ETF 실시간 레이더", layout="wide", initial_sidebar_state="expanded")
 
-st.title("📡 실시간 ETF 괴리율 & 웩더독 모니터링 시스템")
-st.markdown("본 대시보드는 자동 새로고침되며, 국내외 ETF 및 주요 종목의 실시간 추이를 추적합니다.")
+st.title("📡 네이버 금융 연동 실시간 ETF 및 종목 모니터링 시스템")
+st.markdown("본 대시보드는 네이버 증권 실시간 시세를 파싱하여 2초마다 자동 갱신됩니다.")
 
 # 사이드바 설정
 with st.sidebar:
@@ -20,7 +19,7 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("### 🎯 모니터링 타깃")
     
-    target_etf = st.selectbox(
+    target_name = st.selectbox(
         "감시할 종목/ETF 선택", 
         [
             "KODEX 200 (069500)",
@@ -28,109 +27,110 @@ with st.sidebar:
             "TIGER 반도체TOP10 (396500)",
             "PLUS 글로벌HBM반도체 (442580)",
             "KODEX 미국반도체 (390390)",
-            "IBK K-AI반도체코어테크 (0005G0)",
-            "KORU (MSCI Korea 3X)", 
-            "EWY (MSCI Korea South)"
+            "IBK K-AI반도체코어테크 (0005G0)"
         ]
     )
+
+# 종목 코드 추출 (괄호 안의 6자리 숫자)
+code = target_name.split("(")[-1].replace(")", "").strip()
+
+# 💡 네이버 증권 실시간 데이터 스크래핑 함수
+def get_naver_stock_price(item_code):
+    url = f"https://finance.naver.com/item/sise_mini.naver?code={item_code}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36'}
     
-    st.info("💡 괴리율(또는 지수 대비 등락) 격차가 벌어지면 기계적 프로그램 매매(웩더독) 신호로 판정합니다.")
-
-# 💡 안전한 Ticker 매핑 데이터
-ticker_map = {
-    "KODEX 200 (069500)": {"etf": "069500.KS", "nav_proxy": "^KS11"},
-    "삼성전자 (005930)": {"etf": "005930.KS", "nav_proxy": "^KS11"},
-    "TIGER 반도체TOP10 (396500)": {"etf": "396500.KS", "nav_proxy": "^KRXSEM"},
-    "PLUS 글로벌HBM반도체 (442580)": {"etf": "442580.KS", "nav_proxy": "^KRXSEM"},
-    "KODEX 미국반도체 (390390)": {"etf": "390390.KS", "nav_proxy": "^SOX"},
-    "IBK K-AI반도체코어테크 (0005G0)": {"etf": "0005G0.KS", "nav_proxy": "^KRXSEM"},
-    "KORU (MSCI Korea 3X)": {"etf": "KORU", "nav_proxy": "^KS11"},
-    "EWY (MSCI Korea South)": {"etf": "EWY", "nav_proxy": "^KS11"}
-}
-
-# 정규식을 이용해 앞뒤 공백이나 특수문자($ 등)를 완벽하게 제거하고 순수 코드만 추출
-etf_ticker = ticker_map[target_etf]["etf"].strip().replace("$", "")
-nav_ticker = ticker_map[target_etf]["nav_proxy"].strip().replace("$", "")
+    try:
+        response = requests.get(url, headers=headers)
+        dfs = pd.read_html(response.text)
+        df = dfs[0] # 첫 번째 테이블 선택
+        
+        # 네이버 미니시세 테이블 파싱
+        current_price = int(df.iloc[0, 1].replace(",", ""))
+        change_text = df.iloc[1, 1].split()
+        
+        # 등락률 추출
+        direction = change_text[0]
+        change_val = change_text[1].replace(",", "")
+        rate = float(change_text[2].replace("%", "").replace("+", ""))
+        
+        if "하락" in direction or "-" in direction:
+            rate = -rate
+            
+        return current_price, rate
+    except:
+        return None, None
 
 placeholder = st.empty()
 
+# 임시 차트 데이터 축적용 리스트
+if "price_history" not in st.session_state:
+    st.session_state.price_history = []
+if "time_history" not in st.session_state:
+    st.session_state.time_history = []
+if "last_code" not in st.session_state:
+    st.session_state.last_code = code
+
+# 종목 변경 시 차트 초기화
+if st.session_state.last_code != code:
+    st.session_state.price_history = []
+    st.session_state.time_history = []
+    st.session_state.last_code = code
+
 while True:
     with placeholder.container():
-        try:
-            # 실시간 데이터 가져오기
-            etf_data = yf.Ticker(etf_ticker).history(period="1d", interval="1m").iloc[-1]
-            nav_data = yf.Ticker(nav_ticker).history(period="1d", interval="1m").iloc[-1]
+        price, fluctuation_rate = get_naver_stock_price(code)
+        current_time = datetime.now().strftime("%H:%M:%S")
+        
+        if price is not None:
+            # 데이터 축적
+            st.session_state.price_history.append(price)
+            st.session_state.time_history.append(current_time)
             
-            etf_price = round(etf_data["Close"], 2)
-            base_nav = round(nav_data["Close"], 2)
-            
-            # 종목별 환산 스케일링 세부 조정 알고리즘
-            if "069500" in etf_ticker:
-                ratio = (etf_price * 10) / base_nav
-            elif "005930" in etf_ticker:
-                ratio = (etf_price / 25) / (base_nav / 50)
-            elif "KORU" in etf_ticker or "EWY" in etf_ticker:
-                ratio = etf_price / (base_nav / 50)
-            else:
-                ratio = (etf_price / 4) / (base_nav / 50) if base_nav > 0 else 1.0
+            # 최근 20개 데이터만 유지
+            if len(st.session_state.price_history) > 20:
+                st.session_state.price_history.pop(0)
+                st.session_state.time_history.pop(0)
                 
-            disparity = round((ratio - 1) * 100, 2)
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
             # 전광판 배치
-            kpi1, kpi2, kpi3 = st.columns(3)
+            kpi1, kpi2 = st.columns(2)
             with kpi1:
-                # 미국 주식은 $, 한국 주식/ETF는 원화(₩) 표시 구분
-                unit = "$" if not any(x in etf_ticker for x in [".KS", ".KQ"]) else "₩"
-                st.metric(label=f"📊 {target_etf.split(' ')[0]} 현재 가격", value=f"{unit}{etf_price:,}")
+                st.metric(label=f"📊 {target_name.split(' ')[0]} 현재가", value=f"₩{price:,}")
             with kpi2:
-                st.metric(label=f"💎 추적 벤치마크 지수 ({nav_ticker})", value=f"{base_nav:,} pt")
-            with kpi3:
-                if disparity <= -0.5:
-                    status_msg = "🚨 프로그램 매도 폭탄 / 과매도"
-                    delta_color = "inverse"
-                elif disparity >= 0.5:
-                    status_msg = "🔥 과열 / 추격 매수 위험"
-                    delta_color = "normal"
-                else:
-                    status_msg = "✅ 정상 궤도 내 움직임"
-                    delta_color = "off"
-                st.metric(label=f"⚡ 실시간 기준치 대비 격차", value=f"{disparity} %", delta=f"{disparity}%", delta_color=delta_color)
-
+                status_msg = "🔥 과열" if fluctuation_rate >= 1.5 else ("🚨 과매도" if fluctuation_rate <= -1.5 else "✅ 정상")
+                st.metric(label=f"⚡ 장중 등락률 ({status_msg})", value=f"{fluctuation_rate} %", delta=f"{fluctuation_rate}%")
+                
             st.markdown("---")
             
-            # 차트 시각화
+            # 차트 그리기
             col1, col2 = st.columns([2, 1])
             with col1:
-                st.markdown("### 📈 장중 실시간 1분봉 추이")
-                hist_etf = yf.Ticker(etf_ticker).history(period="1d", interval="1m").tail(15)
+                st.markdown("### 📈 실시간 스크래핑 가격 추이 (장중 캐싱)")
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(x=hist_etf.index, y=hist_etf['Close'], name=etf_ticker, line=dict(color='#1f77b4', width=2)))
+                fig.add_trace(go.Scatter(x=st.session_state.time_history, y=st.session_state.price_history, mode='lines+markers', line=dict(color='#00ffcc', width=2)))
                 fig.update_layout(margin=dict(l=20, r=20, t=20, b=20), height=300, template="plotly_dark")
                 st.plotly_chart(fig, use_container_width=True)
                 
             with col2:
-                st.markdown("### 🛑 실시간 리스크 게이지")
+                st.markdown("### 🛑 등락 폭 게이지")
                 fig_gauge = go.Figure(go.Indicator(
                     mode = "gauge+number",
-                    value = disparity,
+                    value = fluctuation_rate,
                     domain = {'x': [0, 1], 'y': [0, 1]},
                     gauge = {
-                        'axis': {'range': [-3, 3]},
+                        'axis': {'range': [-5, 5]},
                         'bar': {'color': "white"},
                         'steps': [
-                            {'range': [-3, -0.5], 'color': "crimson"},
-                            {'range': [-0.5, 0.5], 'color': "forestgreen"},
-                            {'range': [0.5, 3], 'color': "darkorange"}
+                            {'range': [-5, -1.5], 'color': "crimson"},
+                            {'range': [-1.5, 1.5], 'color': "forestgreen"},
+                            {'range': [1.5, 5], 'color': "darkorange"}
                         ],
                     }
                 ))
                 fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20), template="plotly_dark")
                 st.plotly_chart(fig_gauge, use_container_width=True)
                 
-            st.caption(f"최종 업데이트 동기화 시간: {current_time} | 레이더 가동 중...")
-            
-        except Exception as e:
-            st.warning("데이터 연결을 재시도 중이거나 장마감(휴일) 상태입니다.")
+            st.caption(f"네이버 금융 동기화 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 시스템 가동 중")
+        else:
+            st.warning("네이버 금융 연결을 재시도 중이거나 장마감(휴일) 상태입니다.")
             
     time.sleep(refresh_rate)
