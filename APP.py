@@ -9,27 +9,27 @@ import pytz
 
 # 1. 페이지 기본 설정
 st.set_page_config(
-    page_title="글로벌 매크로 & ETF 실시간 종합 관제 레이더", 
+    page_title="글로벌 매크로 레이더", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
 
-# 2. 세션 상태 캐싱 초기화
+# 2. 세션 상태 캐시 안정화
 if "macro_cache" not in st.session_state:
     st.session_state.macro_cache = {
         "kospi": {"price": 2700.0, "rate": 0.0},
-        "usd_krw": {"price": 1380.0, "rate": 0.0},
+        "usd_krw": {"price": 1350.0, "rate": 0.0},
         "wti": {"price": 80.0, "rate": 0.0},
         "taco": {"price": 5000.0, "rate": 0.0}
     }
 if "stock_cache" not in st.session_state:
     st.session_state.stock_cache = {}
 
-# 3. 네이버 실시간 개별 종목 수집 함수
+# 3. 네이버 실시간 개별 종목 API 수집 함수
 def get_naver_multi_prices_safe(codes_list):
     query_str = ",".join([f"SERVICE_ITEM:{c}" for c in codes_list])
     url = f"https://polling.finance.naver.com/api/realtime?query={query_str}"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         response = requests.get(url, headers=headers, timeout=3)
         data = response.json()
@@ -44,41 +44,47 @@ def get_naver_multi_prices_safe(codes_list):
         pass
     return st.session_state.stock_cache
 
-# 4. 하이브리드 매크로 지표 수집 함수
-def get_hybrid_macro_indicators():
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-    
-    # [국내] 코스피, 환율 실시간 크롤링
+# 4. 국내 지수 실시간 크롤링 (문자열 잘림 방지용 경량화 버전)
+def fetch_naver_index_safe():
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    # 코스피 추출
     try:
-        kospi_url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
-        res_kp = requests.get(kospi_url, headers=headers, timeout=2)
-        if res_kp.status_code == 200:
-            p_now = res_kp.text.split('id="now_value">')[1].split('<')[0].replace(",", "")
-            p_rate = res_kp.text.split('id="change_value_and_rate">')[1].split('%')[0].split()[-1].replace("+", "")
-            st.session_state.macro_cache["kospi"] = {"price": float(p_now), "rate": float(p_rate)}
-            
-        fx_url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
-        res_fx = requests.get(fx_url, headers=headers, timeout=2)
-        if res_fx.status_code == 200:
-            f_now = res_fx.text.split('class="value">')[1].split('<')[0].replace(",", "")
-            f_rate = res_fx.text.split('class="change">')[1].split('<')[0].strip().replace(",", "").replace("원", "")
+        url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
+        res = requests.get(url, headers=headers, timeout=2)
+        if res.status_code == 200:
+            txt = res.text
+            p_now = txt.split('id="now_value">')[1].split('<')[0].replace(",", "")
+            p_rt = txt.split('id="change_value_and_rate">')[1].split('%')[0].split()[-1].replace("+", "")
+            st.session_state.macro_cache["kospi"] = {"price": float(p_now), "rate": float(p_rt)}
+    except:
+        pass
+
+    # 원달러 환율 추출
+    try:
+        url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+        res = requests.get(url, headers=headers, timeout=2)
+        if res.status_code == 200:
+            txt = res.text
+            f_now = txt.split('class="value">')[1].split('<')[0].replace(",", "")
+            f_rt = txt.split('class="change">')[1].split('<')[0].strip().replace(",", "").replace("원", "")
             f_price = float(f_now)
-            f_change = float(f_rate)
-            f_prev = f_price - f_change if "-" not in res_fx.text else f_price + f_change
+            f_change = float(f_rt)
+            f_prev = f_price - f_change if "-" not in txt else f_price + f_change
             f_rate_pct = round((f_change / f_prev) * 100, 2)
-            if "🔴" in res_fx.text or "상승" in res_fx.text:
+            if "🔴" in txt or "상승" in txt:
                 f_rate_pct = +f_rate_pct
             else:
                 f_rate_pct = -f_rate_pct
             st.session_state.macro_cache["usd_krw"] = {"price": f_price, "rate": f_rate_pct}
     except:
         pass
-        
-    # [해외] WTI 유가, 필라델피아 반도체 야후 파이낸스 활용
+
+# 5. 해외 매크로 지수 수집 함수 (야후 파이낸스)
+def fetch_yahoo_macro_safe():
     try:
         tickers = {"wti": "CL=F", "taco": "^SOX"}
-        for key, ticker_symbol in tickers.items():
-            ticker = yf.Ticker(ticker_symbol)
+        for key, symbol in tickers.items():
+            ticker = yf.Ticker(symbol)
             todays_data = ticker.history(period='1d')
             if not todays_data.empty:
                 current_price = todays_data['Close'].iloc[-1]
@@ -87,20 +93,58 @@ def get_hybrid_macro_indicators():
                 st.session_state.macro_cache[key] = {"price": round(current_price, 2), "rate": change_rate}
     except:
         pass
-        
-    return st.session_state.macro_cache
 
-# --- 데이터 초기 동기화 ---
-macro = get_hybrid_macro_indicators()
+# --- 초기 데이터 로드 ---
+fetch_naver_index_safe()
+fetch_yahoo_macro_safe()
 
-# 5. 상단 시황 레이아웃 출력
-st.markdown("### 🌐 글로벌 거시경제 및 시황 판넬")
-m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-with m_col1:
-    st.metric(label="⚡ KOSPI 코스피 지수 (실시간)", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
-with m_col2:
-    st.metric(label="💵 원/달러 환율 (실시간)", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
-with m_col3:
-    st.metric(label="🛢️ WTI 국제유가 (26년 8월물) [15분지연]", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
-with m_col4:
-    st.metric(label="🌮 TACO (Phila
+# 6. 사이드바 설정 (무한루프 밖으로 독립 배치)
+with st.sidebar:
+    st.header("⚙️ 레이더 설정")
+    refresh_rate = st.slider("새로고침 주기 (초)", min_value=2, max_value=10, value=3)
+    st.markdown("---")
+    st.markdown("### 🎯 모니터링 타깃")
+    target_name = st.selectbox(
+        "감시할 종목/ETF 선택", 
+        [
+            "KODEX 200 (069500)",
+            "삼성전자 (005930)",
+            "TIGER 반도체TOP10 (396500)",
+            "PLUS 글로벌HBM반도체 (442580)",
+            "KODEX 미국반도체 (390390)",
+            "IBK K-AI반도체코어테크 (0005G0)"
+        ]
+    )
+
+code = target_name.split("(")[-1].replace(")", "").strip()
+
+if "price_history" not in st.session_state:
+    st.session_state.price_history = []
+if "time_history" not in st.session_state:
+    st.session_state.time_history = []
+if "last_code" not in st.session_state:
+    st.session_state.last_code = code
+
+if st.session_state.last_code != code:
+    st.session_state.price_history = []
+    st.session_state.time_history = []
+    st.session_state.last_code = code
+
+# 메인 화면 플레이스홀더 설정
+placeholder = st.empty()
+
+# 7. 실시간 메인 관제 루프
+while True:
+    # 매 루프마다 데이터 동기화
+    fetch_naver_index_safe()
+    fetch_yahoo_macro_safe()
+    single_stock = get_naver_multi_prices_safe([code])
+    macro = st.session_state.macro_cache
+    
+    local_tz = pytz.timezone('Asia/Seoul')
+    current_time_str = datetime.now(local_tz).strftime("%H:%M:%S")
+    
+    # 💡 무한루프 중복 ID 에러(DuplicateElementId)를 근본적으로 해결하는 고유 타임스탬프 키 생성
+    loop_key = str(int(time.time() * 1000))
+    
+    with placeholder
