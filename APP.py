@@ -92,4 +92,4 @@ with m_col2:
     st.metric(
         label="💵 원/달러 환율", 
         value=f"₩{macro['usd_krw']['price']:,}", 
-        delta
+        delta=f"{macro['krw']['rate']}%"
