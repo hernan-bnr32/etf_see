@@ -7,14 +7,14 @@ import time
 from datetime import datetime
 import pytz
 
-# 1. 페이지 기본 설정
+# 1. 기본 페이지 구성
 st.set_page_config(
-    page_title="글로벌 매크로 레이더", 
+    page_title="글로벌 매크로", 
     layout="wide", 
     initial_sidebar_state="expanded"
 )
 
-# 2. 세션 상태 캐시 초기화
+# 2. 캐시 세션 초기화
 if "macro_cache" not in st.session_state:
     st.session_state.macro_cache = {
         "kospi": {"price": 2700.0, "rate": 0.0},
@@ -25,48 +25,58 @@ if "macro_cache" not in st.session_state:
 if "stock_cache" not in st.session_state:
     st.session_state.stock_cache = {}
 
-# 3. 네이버 실시간 개별 종목 API 수집 함수
+# 3. 네이버 실시간 주가 API 수집 (안전 분할)
 def get_naver_multi_prices_safe(codes_list):
     query_str = ",".join([f"SERVICE_ITEM:{c}" for c in codes_list])
-    url = f"https://polling.finance.naver.com/api/realtime?query={query_str}"
+    base_url = "https://polling.finance.naver.com/api/realtime"
+    url = f"{base_url}?query={query_str}"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
         response = requests.get(url, headers=headers, timeout=3)
         data = response.json()
-        for item in data['result']['areas'][0]['datas']:
+        raw_datas = data['result']['areas'][0]['datas']
+        for item in raw_datas:
             c = item['cd']
             price = float(item['nv']) if item.get('nv') is not None else 0.0
             rate = float(item['cr']) if item.get('cr') is not None else 0.0
             nav = float(item['nav']) if 'nav' in item and item['nav'] is not None else None
             if price > 0:
-                st.session_state.stock_cache[c] = {"price": price, "rate": rate, "nav": nav}
+                st.session_state.stock_cache[c] = {
+                    "price": price, 
+                    "rate": rate, 
+                    "nav": nav
+                }
     except:
         pass
     return st.session_state.stock_cache
 
-# 4. 국내 지수 실시간 크롤링 (문자열 파싱 쪼개기 안전 조치)
+# 4. 국내 지수 파싱 (문자열 잘림 절대 안 나게 라인 슬라이싱)
 def fetch_naver_index_safe():
     headers = {'User-Agent': 'Mozilla/5.0'}
-    # 코스피 파싱
+    
+    # 코스피
     try:
-        url_kp = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
-        res_kp = requests.get(url_kp, headers=headers, timeout=2)
-        if res_kp.status_code == 200:
-            txt = res_kp.text
+        kp_url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
+        res = requests.get(kp_url, headers=headers, timeout=2)
+        if res.status_code == 200:
+            txt = res.text
             p_now = txt.split('id="now_value">')[1].split('<')[0]
             p_now = p_now.replace(",", "")
             p_rt = txt.split('id="change_value_and_rate">')[1].split('%')[0]
             p_rt = p_rt.split()[-1].replace("+", "")
-            st.session_state.macro_cache["kospi"] = {"price": float(p_now), "rate": float(p_rt)}
+            st.session_state.macro_cache["kospi"] = {
+                "price": float(p_now), 
+                "rate": float(p_rt)
+            }
     except:
         pass
 
-    # 환율 파싱
+    # 환율
     try:
-        url_fx = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
-        res_fx = requests.get(url_fx, headers=headers, timeout=2)
-        if res_fx.status_code == 200:
-            txt = res_fx.text
+        fx_url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+        res = requests.get(fx_url, headers=headers, timeout=2)
+        if res.status_code == 200:
+            txt = res.text
             f_now = txt.split('class="value">')[1].split('<')[0]
             f_now = f_now.replace(",", "")
             f_rt = txt.split('class="change">')[1].split('<')[0]
@@ -79,11 +89,14 @@ def fetch_naver_index_safe():
                 f_rate_pct = +f_rate_pct
             else:
                 f_rate_pct = -f_rate_pct
-            st.session_state.macro_cache["usd_krw"] = {"price": f_price, "rate": f_rate_pct}
+            st.session_state.macro_cache["usd_krw"] = {
+                "price": f_price, 
+                "rate": f_rate_pct
+            }
     except:
         pass
 
-# 5. 해외 매크로 지수 수집 함수 (야후 파이낸스)
+# 5. 해외 지수 야후 파이낸스 수집
 def fetch_yahoo_macro_safe():
     try:
         tickers = {"wti": "CL=F", "taco": "^SOX"}
@@ -94,18 +107,26 @@ def fetch_yahoo_macro_safe():
                 current_price = todays_data['Close'].iloc[-1]
                 prev_price = todays_data['Open'].iloc[-1] if 'Open' in todays_data else current_price
                 change_rate = round(((current_price - prev_price) / prev_price) * 100, 2) if prev_price != 0 else 0.0
-                st.session_state.macro_cache[key] = {"price": round(current_price, 2), "rate": change_rate}
+                st.session_state.macro_cache[key] = {
+                    "price": round(current_price, 2), 
+                    "rate": change_rate
+                }
     except:
         pass
 
-# 초기 1회 실행
+# 초기 구동 데이터 로드
 fetch_naver_index_safe()
 fetch_yahoo_macro_safe()
 
-# 6. 사이드바 구성 (설정 정보가 루프 내에서 끊기지 않도록 분리)
+# 6. 사이드바 메뉴 배치
 with st.sidebar:
     st.header("⚙️ 레이더 설정")
-    refresh_rate = st.slider("새로고침 주기 (초)", min_value=2, max_value=10, value=3)
+    refresh_rate = st.slider(
+        "새로고침 주기 (초)", 
+        min_value=2, 
+        max_value=10, 
+        value=3
+    )
     st.markdown("---")
     st.markdown("### 🎯 모니터링 타깃")
     target_name = st.selectbox(
@@ -134,10 +155,10 @@ if st.session_state.last_code != code:
     st.session_state.time_history = []
     st.session_state.last_code = code
 
-# 메인 디스플레이 박스 선언
+# 화면 덮어쓰기용 플레이스홀더
 placeholder = st.empty()
 
-# 7. 실시간 메인 관제 루프 실행
+# 7. 실시간 무한 루프 관제망
 while True:
     fetch_naver_index_safe()
     fetch_yahoo_macro_safe()
@@ -147,7 +168,7 @@ while True:
     local_tz = pytz.timezone('Asia/Seoul')
     current_time_str = datetime.now(local_tz).strftime("%H:%M:%S")
     
-    # 중복 엘리먼트 ID 에러 방지용 가변 토큰 키 생성
+    # 중복 컴포넌트 충돌 방지 고유 난수 키 생성
     loop_key = str(int(time.time() * 1000))
     
     with placeholder.container():
@@ -155,16 +176,36 @@ while True:
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         
         with m_col1:
-            st.metric(label="⚡ KOSPI 지수 (실시간)", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
+            val_kp = f"{macro['kospi']['price']:,} pt"
+            st.metric(
+                label="⚡ KOSPI 지수 (실시간)", 
+                value=val_kp, 
+                delta=f"{macro['kospi']['rate']}%"
+            )
         with m_col2:
-            st.metric(label="💵 원/달러 환율 (실시간)", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
+            val_fx = f"₩{macro['usd_krw']['price']:,}"
+            st.metric(
+                label="💵 원/달러 환율 (실시간)", 
+                value=val_fx, 
+                delta=f"{macro['usd_krw']['rate']}%"
+            )
         with m_col3:
-            st.metric(label="🛢️ WTI 국제유가 [15분지연]", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
+            val_wti = f"${macro['wti']['price']:,}"
+            st.metric(
+                label="🛢️ WTI 국제유가 [야후]", 
+                value=val_wti, 
+                delta=f"{macro['wti']['rate']}%"
+            )
         with m_col4:
-            st.metric(label="🌮 필라델피아 반도체 [15분지연]", value=f"{macro['taco']['price']:,} pt", delta=f"{macro['taco']['rate']}%")
+            val_sox = f"{macro['taco']['price']:,} pt"
+            st.metric(
+                label="🌮 필라델피아 반도체 [야후]", 
+                value=val_sox, 
+                delta=f"{macro['taco']['rate']}%"
+            )
 
         st.markdown("---")
-        st.title("📡 선택 종목 실시간 괴리율 & 변동성 종합 레이더")
+        st.title("📡 실시간 괴리율 & 변동성 종합 레이더")
 
         if code in single_stock and single_stock[code]["price"] > 0:
             price = int(single_stock[code]["price"])
@@ -172,4 +213,137 @@ while True:
             nav = single_stock[code]["nav"]
             
             is_etf = nav is not None and nav > 0
-            disparity_rate = round(((price - nav)
+            
+            # 긴 수식을 여러 줄로 완전히 분할하여 잘림 방지
+            if is_etf:
+                diff = price - nav
+                disparity_rate = round((diff / nav) * 100, 2)
+            else:
+                disparity_rate = 0.0
+            
+            if not st.session_state.price_history or st.session_state.price_history[-1] != price or len(st.session_state.price_history) < 2:
+                st.session_state.price_history.append(price)
+                st.session_state.time_history.append(current_time_str)
+            
+            if len(st.session_state.price_history) > 20:
+                st.session_state.price_history.pop(0)
+                st.session_state.time_history.pop(0)
+                
+            # 메인 데이터 메트릭스 전광판
+            kpi1, kpi2, kpi3 = st.columns(3)
+            with kpi1:
+                st.metric(
+                    label="📊 현재 가격", 
+                    value=f"₩{price:,}", 
+                    delta=f"{fluctuation_rate}%"
+                )
+            with kpi2:
+                nav_value = f"₩{int(nav):,}" if is_etf else "N/A (일반주식)"
+                st.metric(label="🎯 실시간 NAV", value=nav_value)
+            with kpi3:
+                if is_etf:
+                    status_disparity = "🚨 고평가" if disparity_rate >= 0.5 else ("🔵 저평가" if disparity_rate <= -0.5 else "✅ 정상")
+                    st.metric(
+                        label=f"🔍 실시간 괴리율 ({status_disparity})", 
+                        value=f"{disparity_rate} %", 
+                        delta=f"{disparity_rate}%", 
+                        delta_color="inverse"
+                    )
+                else:
+                    st.metric(label="🔍 실시간 괴리율", value="N/A")
+            
+            # 하단 텍스트 한 줄 분할 완료
+            st.markdown(
+                "<p style='text-align: right; color: gray; font-size: 12px; margin-top: -10px;'>📊 출처: Naver Finance Feed & Yahoo Finance API</p>", 
+                unsafe_allow_html=True
+            )
+            st.markdown("---")
+            
+            # 차트 영역 및 게이지 분할 레이아웃
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                st.markdown("### 📈 실시간 주가 추이")
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.time_history, 
+                    y=st.session_state.price_history, 
+                    mode='lines+markers', 
+                    line=dict(color='#00ffcc', width=2.5)
+                ))
+                fig.update_layout(
+                    margin=dict(l=20, r=20, t=20, b=20), 
+                    height=380, 
+                    template="plotly_dark"
+                )
+                st.plotly_chart(
+                    fig, 
+                    use_container_width=True, 
+                    key=f"chart_{loop_key}"
+                )
+                
+            with col2:
+                st.markdown("### 📊 리스크 종합 분석")
+                g_col1, g_col2 = st.columns(2)
+                
+                with g_col1:
+                    st.markdown("##### 🎯 괴리율 미터")
+                    if is_etf:
+                        fig_gauge1 = go.Figure(go.Indicator(
+                            mode="gauge+number", 
+                            value=disparity_rate, 
+                            domain={'x': [0, 1], 'y': [0, 1]},
+                            gauge={
+                                'axis': {'range': [-2, 2]}, 
+                                'bar': {'color': "white"}, 
+                                'steps': [
+                                    {'range': [-2, -0.5], 'color': "navy"}, 
+                                    {'range': [-0.5, 0.5], 'color': "forestgreen"}, 
+                                    {'range': [0.5, 2], 'color': "crimson"}
+                                ]
+                            }
+                        ))
+                        fig_gauge1.update_layout(
+                            height=180, 
+                            margin=dict(l=10, r=10, t=10, b=10), 
+                            template="plotly_dark"
+                        )
+                        st.plotly_chart(
+                            fig_gauge1, 
+                            use_container_width=True, 
+                            key=f"g1_{loop_key}"
+                        )
+                    else:
+                        st.info("ETF 전용 지표입니다.")
+                
+                with g_col2:
+                    st.markdown("##### 🛑 변동성 리스크")
+                    fig_gauge2 = go.Figure(go.Indicator(
+                        mode="gauge+number", 
+                        value=fluctuation_rate, 
+                        domain={'x': [0, 1], 'y': [0, 1]},
+                        gauge={
+                            'axis': {'range': [-5, 5]}, 
+                            'bar': {'color': "white"}, 
+                            'steps': [
+                                {'range': [-5, -1.5], 'color': "crimson"}, 
+                                {'range': [-1.5, 1.5], 'color': "forestgreen"}, 
+                                {'range': [1.5, 5], 'color': "darkorange"}
+                            ]
+                        }
+                    ))
+                    fig_gauge2.update_layout(
+                        height=180, 
+                        margin=dict(l=10, r=10, t=10, b=10), 
+                        template="plotly_dark"
+                    )
+                    st.plotly_chart(
+                        fig_gauge2, 
+                        use_container_width=True, 
+                        key=f"g2_{loop_key}"
+                    )
+                
+            st.caption(f"동기화 시간: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 시스템 가동 중")
+        else:
+            st.warning("데이터 동기화 중입니다. 잠시만 기다려주세요...")
+            
+    time.sleep(refresh_rate)
