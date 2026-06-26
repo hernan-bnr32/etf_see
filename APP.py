@@ -35,7 +35,7 @@ with st.sidebar:
 # 종목 코드 추출
 code = target_name.split("(")[-1].replace(")", "").strip()
 
-# 데이터 파싱 함수 (예외 방어막 강화)
+# 데이터 파싱 함수
 def get_naver_stock_price(item_code):
     url = f"https://finance.naver.com/item/main.naver?code={item_code}"
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36'}
@@ -44,11 +44,11 @@ def get_naver_stock_price(item_code):
         response = requests.get(url, headers=headers)
         dfs = pd.read_html(response.text)
         
-        # 현재가 테이블 추출
+        # 현재가 추출
         df_sise = dfs[2] 
         current_price = int(str(df_sise.iloc[0, 1]).replace(",", ""))
         
-        # 등락률 테이블 추출 및 청소
+        # 등락률 추출
         df_rate = dfs[1]
         rate_text = str(df_rate.iloc[0, 1]).split("%")[0].strip().replace("+", "")
         rate_cleaned = "".join([c for c in rate_text if c.isdigit() or c in ['.', '-']])
@@ -56,7 +56,6 @@ def get_naver_stock_price(item_code):
         fluctuation_rate = float(rate_cleaned) if rate_cleaned else 0.0
         return current_price, fluctuation_rate
     except:
-        # 실패 시 미니시세 백업 가동
         try:
             url_mini = f"https://finance.naver.com/item/sise_mini.naver?code={item_code}"
             res_mini = requests.get(url_mini, headers=headers)
@@ -101,7 +100,7 @@ while True:
             # 대시보드 상단 지표
             kpi1, kpi2 = st.columns(2)
             with kpi1:
-                st.metric(label=f"📊 현재 가격", value=f"₩{price:,}")
+                st.metric(label="📊 현재 가격", value=f"₩{price:,}")
             with kpi2:
                 status_msg = "🔥 과열" if fluctuation_rate >= 1.5 else ("🚨 과매도" if fluctuation_rate <= -1.5 else "✅ 정상")
                 st.metric(label=f"⚡ 장중 변동률 ({status_msg})", value=f"{fluctuation_rate} %", delta=f"{fluctuation_rate}%")
@@ -113,4 +112,32 @@ while True:
             with col1:
                 st.markdown("### 📈 실시간 주가 추이")
                 fig = go.Figure()
-                fig.add_trace(go.Scatter(
+                # 괄호 닫힘 오류 수정을 위해 한 줄로 깔끔하게 정리
+                fig.add_trace(go.Scatter(x=st.session_state.time_history, y=st.session_state.price_history, mode='lines+markers', line=dict(color='#00ffcc', width=2.5)))
+                fig.update_layout(margin=dict(l=20, r=20, t=20, b=20), height=300, template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
+                
+            with col2:
+                st.markdown("### 🛑 리스크 변동 게이지")
+                fig_gauge = go.Figure(go.Indicator(
+                    mode = "gauge+number",
+                    value = fluctuation_rate,
+                    domain = {'x': [0, 1], 'y': [0, 1]},
+                    gauge = {
+                        'axis': {'range': [-5, 5]},
+                        'bar': {'color': "white"},
+                        'steps': [
+                            {'range': [-5, -1.5], 'color': "crimson"},
+                            {'range': [-1.5, 1.5], 'color': "forestgreen"},
+                            {'range': [1.5, 5], 'color': "darkorange"}
+                        ],
+                    }
+                ))
+                fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20), template="plotly_dark")
+                st.plotly_chart(fig_gauge, use_container_width=True)
+                
+            st.caption(f"KST: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | Running...")
+        else:
+            st.warning("Connecting to server...")
+            
+    time.sleep(refresh_rate)
