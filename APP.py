@@ -14,7 +14,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 2. 세션 상태 캐시 안정화
+# 2. 세션 상태 캐시 초기화
 if "macro_cache" not in st.session_state:
     st.session_state.macro_cache = {
         "kospi": {"price": 2700.0, "rate": 0.0},
@@ -44,29 +44,33 @@ def get_naver_multi_prices_safe(codes_list):
         pass
     return st.session_state.stock_cache
 
-# 4. 국내 지수 실시간 크롤링 (문자열 잘림 방지용 경량화 버전)
+# 4. 국내 지수 실시간 크롤링 (문자열 파싱 쪼개기 안전 조치)
 def fetch_naver_index_safe():
     headers = {'User-Agent': 'Mozilla/5.0'}
-    # 코스피 추출
+    # 코스피 파싱
     try:
-        url = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
-        res = requests.get(url, headers=headers, timeout=2)
-        if res.status_code == 200:
-            txt = res.text
-            p_now = txt.split('id="now_value">')[1].split('<')[0].replace(",", "")
-            p_rt = txt.split('id="change_value_and_rate">')[1].split('%')[0].split()[-1].replace("+", "")
+        url_kp = "https://finance.naver.com/sise/sise_index.naver?code=KOSPI"
+        res_kp = requests.get(url_kp, headers=headers, timeout=2)
+        if res_kp.status_code == 200:
+            txt = res_kp.text
+            p_now = txt.split('id="now_value">')[1].split('<')[0]
+            p_now = p_now.replace(",", "")
+            p_rt = txt.split('id="change_value_and_rate">')[1].split('%')[0]
+            p_rt = p_rt.split()[-1].replace("+", "")
             st.session_state.macro_cache["kospi"] = {"price": float(p_now), "rate": float(p_rt)}
     except:
         pass
 
-    # 원달러 환율 추출
+    # 환율 파싱
     try:
-        url = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
-        res = requests.get(url, headers=headers, timeout=2)
-        if res.status_code == 200:
-            txt = res.text
-            f_now = txt.split('class="value">')[1].split('<')[0].replace(",", "")
-            f_rt = txt.split('class="change">')[1].split('<')[0].strip().replace(",", "").replace("원", "")
+        url_fx = "https://finance.naver.com/marketindex/exchangeDetail.naver?marketindexCd=FX_USDKRW"
+        res_fx = requests.get(url_fx, headers=headers, timeout=2)
+        if res_fx.status_code == 200:
+            txt = res_fx.text
+            f_now = txt.split('class="value">')[1].split('<')[0]
+            f_now = f_now.replace(",", "")
+            f_rt = txt.split('class="change">')[1].split('<')[0]
+            f_rt = f_rt.strip().replace(",", "").replace("원", "")
             f_price = float(f_now)
             f_change = float(f_rt)
             f_prev = f_price - f_change if "-" not in txt else f_price + f_change
@@ -94,11 +98,11 @@ def fetch_yahoo_macro_safe():
     except:
         pass
 
-# --- 초기 데이터 로드 ---
+# 초기 1회 실행
 fetch_naver_index_safe()
 fetch_yahoo_macro_safe()
 
-# 6. 사이드바 설정 (무한루프 밖으로 독립 배치)
+# 6. 사이드바 구성 (설정 정보가 루프 내에서 끊기지 않도록 분리)
 with st.sidebar:
     st.header("⚙️ 레이더 설정")
     refresh_rate = st.slider("새로고침 주기 (초)", min_value=2, max_value=10, value=3)
@@ -130,12 +134,11 @@ if st.session_state.last_code != code:
     st.session_state.time_history = []
     st.session_state.last_code = code
 
-# 메인 화면 플레이스홀더 설정
+# 메인 디스플레이 박스 선언
 placeholder = st.empty()
 
-# 7. 실시간 메인 관제 루프
+# 7. 실시간 메인 관제 루프 실행
 while True:
-    # 매 루프마다 데이터 동기화
     fetch_naver_index_safe()
     fetch_yahoo_macro_safe()
     single_stock = get_naver_multi_prices_safe([code])
@@ -144,7 +147,29 @@ while True:
     local_tz = pytz.timezone('Asia/Seoul')
     current_time_str = datetime.now(local_tz).strftime("%H:%M:%S")
     
-    # 💡 무한루프 중복 ID 에러(DuplicateElementId)를 근본적으로 해결하는 고유 타임스탬프 키 생성
+    # 중복 엘리먼트 ID 에러 방지용 가변 토큰 키 생성
     loop_key = str(int(time.time() * 1000))
     
-    with placeholder:
+    with placeholder.container():
+        st.markdown("### 🌐 글로벌 거시경제 및 시황 판넬")
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        
+        with m_col1:
+            st.metric(label="⚡ KOSPI 지수 (실시간)", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
+        with m_col2:
+            st.metric(label="💵 원/달러 환율 (실시간)", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
+        with m_col3:
+            st.metric(label="🛢️ WTI 국제유가 [15분지연]", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
+        with m_col4:
+            st.metric(label="🌮 필라델피아 반도체 [15분지연]", value=f"{macro['taco']['price']:,} pt", delta=f"{macro['taco']['rate']}%")
+
+        st.markdown("---")
+        st.title("📡 선택 종목 실시간 괴리율 & 변동성 종합 레이더")
+
+        if code in single_stock and single_stock[code]["price"] > 0:
+            price = int(single_stock[code]["price"])
+            fluctuation_rate = single_stock[code]["rate"]
+            nav = single_stock[code]["nav"]
+            
+            is_etf = nav is not None and nav > 0
+            disparity_rate = round(((price - nav)
