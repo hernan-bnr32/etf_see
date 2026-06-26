@@ -7,9 +7,9 @@ from datetime import datetime
 import pytz
 
 # 페이지 기본 설정
-st.set_page_config(page_title="글로벌 매크로 & ETF 실시간 괴리율 레이더", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="글로벌 매크로 & ETF 실시간 종합 관제 레이더", layout="wide", initial_sidebar_state="expanded")
 
-# 💡 네이버 실시간 API 수집 함수
+# 💡 네이버 실시간 API 수집 함수 (NAV 데이터 추출 포함)
 def get_naver_multi_prices(codes_list):
     query_str = ",".join([f"SERVICE_ITEM:{c}" for c in codes_list])
     url = f"https://polling.finance.naver.com/api/realtime?query={query_str}"
@@ -87,7 +87,7 @@ with m_col4:
 st.markdown("---")
 
 # --- 하단 개별 종목 실시간 레이더 ---
-st.title("📡 선택 종목 실시간 괴리율 추적 레이더")
+st.title("📡 선택 종목 실시간 괴리율 & 변동성 종합 레이더")
 
 # 사이드바 설정
 with st.sidebar:
@@ -108,114 +108,4 @@ with st.sidebar:
     )
 
 # 종목 코드 추출
-code = target_name.split("(")[-1].replace(")", "").strip()
-
-# 세션 상태 캐싱 초기화
-if "price_history" not in st.session_state:
-    st.session_state.price_history = []
-if "time_history" not in st.session_state:
-    st.session_state.time_history = []
-if "last_code" not in st.session_state:
-    st.session_state.last_code = code
-
-# 종목 교체 시 리셋
-if st.session_state.last_code != code:
-    st.session_state.price_history = []
-    st.session_state.time_history = []
-    st.session_state.last_code = code
-
-placeholder = st.empty()
-
-while True:
-    with placeholder.container():
-        single_stock = get_naver_multi_prices([code])
-        local_tz = pytz.timezone('Asia/Seoul')
-        current_time = datetime.now(local_tz).strftime("%H:%M:%S")
-        
-        if code in single_stock:
-            price = int(single_stock[code]["price"])
-            fluctuation_rate = single_stock[code]["rate"]
-            nav = single_stock[code]["nav"]
-            
-            is_etf = nav is not None and nav > 0
-            if is_etf:
-                disparity_rate = round(((price - nav) / nav) * 100, 2)
-            else:
-                disparity_rate = 0.0
-            
-            st.session_state.price_history.append(price)
-            st.session_state.time_history.append(current_time)
-            
-            if len(st.session_state.price_history) > 20:
-                st.session_state.price_history.pop(0)
-                st.session_state.time_history.pop(0)
-                
-            # 메인 전광판
-            kpi1, kpi2, kpi3 = st.columns(3)
-            with kpi1:
-                st.metric(label="📊 현재 가격", value=f"₩{price:,}", delta=f"{fluctuation_rate}%")
-            with kpi2:
-                nav_value = f"₩{int(nav):,}" if is_etf else "N/A (일반주식)"
-                st.metric(label="🎯 실시간 NAV (순자산가치)", value=nav_value)
-            with kpi3:
-                if is_etf:
-                    status_disparity = "🚨 고평가 (매도우위)" if disparity_rate >= 0.5 else ("🔵 저평가 (매수우위)" if disparity_rate <= -0.5 else "✅ 정상")
-                    st.metric(label=f"🔍 실시간 괴리율 ({status_disparity})", value=f"{disparity_rate} %", delta=f"{disparity_rate}%", delta_color="inverse")
-                else:
-                    st.metric(label="🔍 실시간 괴리율", value="N/A")
-                
-            st.markdown("---")
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                st.markdown("### 📈 실시간 주가 추이 (2초 단위 누적)")
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=st.session_state.time_history, y=st.session_state.price_history, mode='lines+markers', line=dict(color='#00ffcc', width=2.5)))
-                fig.update_layout(margin=dict(l=20, r=20, t=20, b=20), height=300, template="plotly_dark")
-                # 메인 주가 추이 차트에도 키 지정
-                st.plotly_chart(fig, use_container_width=True, key="main_price_chart")
-                
-            with col2:
-                if is_etf:
-                    st.markdown("### 🎯 실시간 괴리율 미터기")
-                    gauge_value = disparity_rate
-                    gauge_range = [-2, 2]
-                    gauge_steps = [
-                        {'range': [-2, -0.5], 'color': "navy"},
-                        {'range': [-0.5, 0.5], 'color': "forestgreen"},
-                        {'range': [0.5, 2], 'color': "crimson"}
-                    ]
-                    gauge_title = "괴리율 (%)"
-                    chart_key = "etf_disparity_gauge" # 고유 키 부여
-                else:
-                    st.markdown("### 🛑 변동성 게이지 (주식용)")
-                    gauge_value = fluctuation_rate
-                    gauge_range = [-5, 5]
-                    gauge_steps = [
-                        {'range': [-5, -1.5], 'color': "crimson"},
-                        {'range': [-1.5, 1.5], 'color': "forestgreen"},
-                        {'range': [1.5, 5], 'color': "darkorange"}
-                    ]
-                    gauge_title = "등락률 (%)"
-                    chart_key = "stock_fluctuation_gauge" # 고유 키 부여
-                    
-                fig_gauge = go.Figure(go.Indicator(
-                    mode = "gauge+number",
-                    value = gauge_value,
-                    domain = {'x': [0, 1], 'y': [0, 1]},
-                    title = {'text': gauge_title, 'font': {'size': 14}},
-                    gauge = {
-                        'axis': {'range': gauge_range},
-                        'bar': {'color': "white"},
-                        'steps': gauge_steps,
-                    }
-                ))
-                fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20), template="plotly_dark")
-                # 💡 핵심 수정: 각 차트 세션 상태에 고유 key를 부여하여 충돌 완벽 차단
-                st.plotly_chart(fig_gauge, use_container_width=True, key=chart_key)
-                
-            st.caption(f"KST 실시간 동기화 완료: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 괴리율 연동 모듈 가동 중")
-        else:
-            st.warning("데이터 피드 동기화 중입니다...")
-            
-    time.sleep(refresh_rate)
+code = target_name.split("(")
