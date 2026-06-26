@@ -7,7 +7,7 @@ from datetime import datetime
 import pytz
 
 # 페이지 기본 설정
-st.set_page_config(page_title="글로벌 매크로 & ETF 실시간 레이더", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="글로벌 매크로 & ETF 실시간 괴리율 레이더", layout="wide", initial_sidebar_state="expanded")
 
 # 💡 네이버 실시간 API 수집 함수
 def get_naver_multi_prices(codes_list):
@@ -23,7 +23,8 @@ def get_naver_multi_prices(codes_list):
             c = item['cd']
             price = float(item['nv'])
             rate = float(item['cr'])
-            results[c] = {"price": price, "rate": rate}
+            nav = float(item['nav']) if 'nav' in item and item['nav'] is not None else None
+            results[c] = {"price": price, "rate": rate, "nav": nav}
         return results
     except:
         return {}
@@ -48,7 +49,6 @@ def get_macro_indicators():
             cd = item['cd']
             nv = float(item['nv'])
             cr = float(item['cr']) if 'cr' in item and item['cr'] is not None else 0.0
-            
             if cd == "FX_USDKRW":
                 macro_data["usd_krw"] = {"price": nv, "rate": cr}
             elif cd == "OIL_GSL":
@@ -62,12 +62,10 @@ def get_macro_indicators():
             cd = item['cd']
             nv = float(item['nv'])
             cr = float(item['cr']) if 'cr' in item and item['cr'] is not None else 0.0
-            
             if cd == "NAS@SOX":
                 macro_data["taco"] = {"price": nv, "rate": cr}
             elif cd == "OIL_CL":
                 macro_data["wti"] = {"price": nv, "rate": cr}
-                
         return macro_data
     except:
         return macro_data
@@ -79,21 +77,17 @@ macro = get_macro_indicators()
 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 with m_col1:
     st.metric(label="📉 KOSPI 코스피 지수", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
-
-# 💡 피드백 주신 원/달러 환율 메트릭 수정 (딕셔너리 키 및 괄호 완벽 매칭)
 with m_col2:
     st.metric(label="💵 원/달러 환율", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
-
 with m_col3:
     st.metric(label="🛢️ WTI 국제유가 (선물)", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
-
 with m_col4:
     st.metric(label="🌮 TACO (Phila 반도체 지수)", value=f"{macro['taco']['price']:,} pt", delta=f"{macro['taco']['rate']}%")
 
 st.markdown("---")
 
 # --- 하단 개별 종목 실시간 레이더 ---
-st.title("📡 선택 종목 실시간 집중 감시 레이더")
+st.title("📡 선택 종목 실시간 괴리율 추적 레이더")
 
 # 사이드바 설정
 with st.sidebar:
@@ -141,6 +135,13 @@ while True:
         if code in single_stock:
             price = int(single_stock[code]["price"])
             fluctuation_rate = single_stock[code]["rate"]
+            nav = single_stock[code]["nav"]
+            
+            is_etf = nav is not None and nav > 0
+            if is_etf:
+                disparity_rate = round(((price - nav) / nav) * 100, 2)
+            else:
+                disparity_rate = 0.0
             
             st.session_state.price_history.append(price)
             st.session_state.time_history.append(current_time)
@@ -149,12 +150,19 @@ while True:
                 st.session_state.price_history.pop(0)
                 st.session_state.time_history.pop(0)
                 
-            kpi1, kpi2 = st.columns(2)
+            # 메인 전광판
+            kpi1, kpi2, kpi3 = st.columns(3)
             with kpi1:
-                st.metric(label="📊 현재 가격", value=f"₩{price:,}")
+                st.metric(label="📊 현재 가격", value=f"₩{price:,}", delta=f"{fluctuation_rate}%")
             with kpi2:
-                status_msg = "🔥 과열" if fluctuation_rate >= 1.5 else ("🚨 과매도" if fluctuation_rate <= -1.5 else "✅ 정상")
-                st.metric(label=f"⚡ 현재 등락률 ({status_msg})", value=f"{fluctuation_rate} %", delta=f"{fluctuation_rate}%")
+                nav_value = f"₩{int(nav):,}" if is_etf else "N/A (일반주식)"
+                st.metric(label="🎯 실시간 NAV (순자산가치)", value=nav_value)
+            with kpi3:
+                if is_etf:
+                    status_disparity = "🚨 고평가 (매도우위)" if disparity_rate >= 0.5 else ("🔵 저평가 (매수우위)" if disparity_rate <= -0.5 else "✅ 정상")
+                    st.metric(label=f"🔍 실시간 괴리율 ({status_disparity})", value=f"{disparity_rate} %", delta=f"{disparity_rate}%", delta_color="inverse")
+                else:
+                    st.metric(label="🔍 실시간 괴리율", value="N/A")
                 
             st.markdown("---")
             
@@ -164,28 +172,49 @@ while True:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=st.session_state.time_history, y=st.session_state.price_history, mode='lines+markers', line=dict(color='#00ffcc', width=2.5)))
                 fig.update_layout(margin=dict(l=20, r=20, t=20, b=20), height=300, template="plotly_dark")
-                st.plotly_chart(fig, use_container_width=True)
+                # 메인 주가 추이 차트에도 키 지정
+                st.plotly_chart(fig, use_container_width=True, key="main_price_chart")
                 
             with col2:
-                st.markdown("### 🛑 변동성 리스크 게이지")
+                if is_etf:
+                    st.markdown("### 🎯 실시간 괴리율 미터기")
+                    gauge_value = disparity_rate
+                    gauge_range = [-2, 2]
+                    gauge_steps = [
+                        {'range': [-2, -0.5], 'color': "navy"},
+                        {'range': [-0.5, 0.5], 'color': "forestgreen"},
+                        {'range': [0.5, 2], 'color': "crimson"}
+                    ]
+                    gauge_title = "괴리율 (%)"
+                    chart_key = "etf_disparity_gauge" # 고유 키 부여
+                else:
+                    st.markdown("### 🛑 변동성 게이지 (주식용)")
+                    gauge_value = fluctuation_rate
+                    gauge_range = [-5, 5]
+                    gauge_steps = [
+                        {'range': [-5, -1.5], 'color': "crimson"},
+                        {'range': [-1.5, 1.5], 'color': "forestgreen"},
+                        {'range': [1.5, 5], 'color': "darkorange"}
+                    ]
+                    gauge_title = "등락률 (%)"
+                    chart_key = "stock_fluctuation_gauge" # 고유 키 부여
+                    
                 fig_gauge = go.Figure(go.Indicator(
                     mode = "gauge+number",
-                    value = fluctuation_rate,
+                    value = gauge_value,
                     domain = {'x': [0, 1], 'y': [0, 1]},
+                    title = {'text': gauge_title, 'font': {'size': 14}},
                     gauge = {
-                        'axis': {'range': [-5, 5]},
+                        'axis': {'range': gauge_range},
                         'bar': {'color': "white"},
-                        'steps': [
-                            {'range': [-5, -1.5], 'color': "crimson"},
-                            {'range': [-1.5, 1.5], 'color': "forestgreen"},
-                            {'range': [1.5, 5], 'color': "darkorange"}
-                        ],
+                        'steps': gauge_steps,
                     }
                 ))
                 fig_gauge.update_layout(height=250, margin=dict(l=20, r=20, t=20, b=20), template="plotly_dark")
-                st.plotly_chart(fig_gauge, use_container_width=True)
+                # 💡 핵심 수정: 각 차트 세션 상태에 고유 key를 부여하여 충돌 완벽 차단
+                st.plotly_chart(fig_gauge, use_container_width=True, key=chart_key)
                 
-            st.caption(f"KST 실시간 동기화 완료: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 인프라 정상")
+            st.caption(f"KST 실시간 동기화 완료: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 괴리율 연동 모듈 가동 중")
         else:
             st.warning("데이터 피드 동기화 중입니다...")
             
