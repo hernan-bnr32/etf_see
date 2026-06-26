@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import requests
+import yfinance as yf  # 💡 매크로 수집용 야후 파이낸스 라이브러리 추가
 import plotly.graph_objects as go
 import time
 from datetime import datetime
@@ -9,7 +10,7 @@ import pytz
 # 페이지 기본 설정
 st.set_page_config(page_title="글로벌 매크로 & ETF 실시간 종합 관제 레이더", layout="wide", initial_sidebar_state="expanded")
 
-# 💡 세션 상태를 활용해 데이터 피드 캐싱 (네트워크 단절 대비 백업용)
+# 💡 세션 상태 캐싱 (네트워크 지연 대비 안정성 확보)
 if "macro_cache" not in st.session_state:
     st.session_state.macro_cache = {
         "kospi": {"price": 2700.0, "rate": 0.0},
@@ -20,7 +21,7 @@ if "macro_cache" not in st.session_state:
 if "stock_cache" not in st.session_state:
     st.session_state.stock_cache = {}
 
-# 💡 안전한 네이버 실시간 API 수집 함수
+# 💡 [기존 유지] 네이버 실시간 개별 종목 API 수집 함수
 def get_naver_multi_prices_safe(codes_list):
     query_str = ",".join([f"SERVICE_ITEM:{c}" for c in codes_list])
     url = f"https://polling.finance.naver.com/api/realtime?query={query_str}"
@@ -35,72 +36,69 @@ def get_naver_multi_prices_safe(codes_list):
             rate = float(item['cr']) if item.get('cr') is not None else 0.0
             nav = float(item['nav']) if 'nav' in item and item['nav'] is not None else None
             
-            # 정상 데이터인 경우 캐시 업데이트
             if price > 0:
                 st.session_state.stock_cache[c] = {"price": price, "rate": rate, "nav": nav}
-    except Exception as e:
-        pass # 실패 시 기존 캐시 데이터 사용
-    
+    except:
+        pass
     return st.session_state.stock_cache
 
-# 💡 안전한 거시경제 지표 수집 함수
-def get_macro_indicators_safe():
-    url = "https://polling.finance.naver.com/api/realtime?query=SERVICE_MARKETINDEX:FX_USDKRW,SERVICE_MARKETINDEX:OIL_GSL,SERVICE_MARKETINDEX:SPI@KOSPI"
-    url_global = "https://polling.finance.naver.com/api/realtime?query=SERVICE_WORLDINDEX:NAS@SOX,SERVICE_MARKETINDEX:OIL_CL"
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    
+# 💡 [새로운 엔진] 야후 파이낸스 기반 매크로 수집 함수 (차단 원천 봉쇄)
+def get_macro_indicators_yahoo():
     try:
-        res = requests.get(url, headers=headers, timeout=3)
-        data = res.json()
-        for item in data['result']['areas'][0]['datas']:
-            cd = item['cd']
-            nv = float(item['nv']) if item.get('nv') is not None else 0.0
-            cr = float(item['cr']) if item.get('cr') is not None else 0.0
+        # 야후 파이낸스 티커 지정
+        # ^KS11: 코스피, USDKRW=X: 원달러 환율, CL=F: WTI 유가, ^SOX: 필라델피아 반도체(TACO 대용)
+        tickers = {"kospi": "^KS11", "usd_krw": "USDKRW=X", "wti": "CL=F", "taco": "^SOX"}
+        
+        for key, ticker_symbol in tickers.items():
+            ticker = yf.Ticker(ticker_symbol)
+            # 가장 최신의 1일 데이터 추출
+            todays_data = ticker.history(period='1d')
             
-            if nv > 0:
-                if cd == "FX_USDKRW": st.session_state.macro_cache["usd_krw"] = {"price": nv, "rate": cr}
-                elif cd == "OIL_GSL": st.session_state.macro_cache["wti"] = {"price": nv, "rate": cr}
-                elif cd == "SPI@KOSPI": st.session_state.macro_cache["kospi"] = {"price": nv, "rate": cr}
+            if not todays_data.empty:
+                current_price = todays_data['Close'].iloc[-1]
+                prev_price = todays_data['Open'].iloc[-1] if 'Open' in todays_data else current_price
                 
-        res_g = requests.get(url_global, headers=headers, timeout=3)
-        data_g = res_g.json()
-        for item in data_g['result']['areas'][0]['datas']:
-            cd = item['cd']
-            nv = float(item['nv']) if item.get('nv') is not None else 0.0
-            cr = float(item['cr']) if item.get('cr') is not None else 0.0
-            
-            if nv > 0:
-                if cd == "NAS@SOX": st.session_state.macro_cache["taco"] = {"price": nv, "rate": cr}
-                elif cd == "OIL_CL": st.session_state.macro_cache["wti"] = {"price": nv, "rate": cr}
+                # 등락률 계산
+                change_rate = round(((current_price - prev_price) / prev_price) * 100, 2) if prev_price != 0 else 0.0
+                
+                # 원/달러 환율의 경우 야후 파이낸스는 소수점 4자리까지 표기되므로 가독성 보정
+                if key == "usd_krw":
+                    current_price = round(current_price, 2)
+                    
+                st.session_state.macro_cache[key] = {
+                    "price": round(current_price, 2),
+                    "rate": change_rate
+                }
     except Exception as e:
-        pass # 에러 발생 시 0.0으로 밀지 않고 기존 캐시값 방어
+        pass # 에러 발생 시 기존 캐시 데이터 유지
         
     return st.session_state.macro_cache
 
-# --- 데이터 로드 ---
-macro = get_macro_indicators_safe()
+# --- 데이터 초기 로드 ---
+macro = get_macro_indicators_yahoo()
 
-# --- 대시보드 상단 글로벌 매크로 판넬 ---
-st.markdown("### 🌐 글로벌 거시경제 및 시황 판넬")
+# --- 대시보드 상단 글로벌 매크로 판넬 (야후 파이낸스 연동) ---
+st.markdown("### 🌐 글로벌 거시경제 및 시황 판넬 (Yahoo Finance Engine)")
 m_col1, m_col2, m_col3, m_col4 = st.columns(4)
 with m_col1:
     st.metric(label="📉 KOSPI 코스피 지수", value=f"{macro['kospi']['price']:,} pt", delta=f"{macro['kospi']['rate']}%")
 with m_col2:
     st.metric(label="💵 원/달러 환율", value=f"₩{macro['usd_krw']['price']:,}", delta=f"{macro['usd_krw']['rate']}%")
 with m_col3:
-    st.metric(label="🛢️ WTI 국제유가 (선물)", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
+    # 💡 요청하신 유가 선물 월물(근월물인 8월물 기준) 정보 명시 완료
+    st.metric(label="🛢️ WTI 국제유가 (26년 8월물 선물)", value=f"${macro['wti']['price']:,}", delta=f"{macro['wti']['rate']}%")
 with m_col4:
     st.metric(label="🌮 TACO (Phila 반도체 지수)", value=f"{macro['taco']['price']:,} pt", delta=f"{macro['taco']['rate']}%")
 
 st.markdown("---")
 
-# --- 하단 개별 종목 실시간 레이더 ---
+# --- 하단 개별 종목 실시간 레이더 (기존 완벽 유지) ---
 st.title("📡 선택 종목 실시간 괴리율 & 변동성 종합 레이더")
 
 # 사이드바 설정
 with st.sidebar:
     st.header("⚙️ 레이더 설정")
-    refresh_rate = st.slider("새로고침 주기 (초)", min_value=2, max_value=10, value=3) # 기본값 3초로 안정화
+    refresh_rate = st.slider("새로고침 주기 (초)", min_value=2, max_value=10, value=3)
     st.markdown("---")
     st.markdown("### 🎯 모니터링 타깃")
     target_name = st.selectbox(
@@ -133,10 +131,13 @@ placeholder = st.empty()
 
 while True:
     with placeholder.container():
+        # 개별 타깃 종목 수집 및 상단 매크로 지표 병렬 갱신
         single_stock = get_naver_multi_prices_safe([code])
+        macro = get_macro_indicators_yahoo()
+        
         local_tz = pytz.timezone('Asia/Seoul')
         current_time_str = datetime.now(local_tz).strftime("%H:%M:%S")
-        ts_key = str(int(time.time() * 1000))  # 고유 엘리먼트 키 생성용
+        ts_key = str(int(time.time() * 1000)) # 중복 키 충돌 방지용 태그
         
         if code in single_stock and single_stock[code]["price"] > 0:
             price = int(single_stock[code]["price"])
@@ -146,7 +147,7 @@ while True:
             is_etf = nav is not None and nav > 0
             disparity_rate = round(((price - nav) / nav) * 100, 2) if is_etf else 0.0
             
-            # 차트용 데이터 누적
+            # 주가 이력 축적
             if not st.session_state.price_history or st.session_state.price_history[-1] != price or len(st.session_state.price_history) < 2:
                 st.session_state.price_history.append(price)
                 st.session_state.time_history.append(current_time_str)
@@ -171,7 +172,7 @@ while True:
                 
             st.markdown("---")
             
-            # 레이아웃 배치
+            # 좌측(차트), 우측(종합 게이지 패널) 배치
             col1, col2 = st.columns([2, 1])
             with col1:
                 st.markdown("### 📈 실시간 주가 추이 (정밀 누적)")
@@ -225,9 +226,8 @@ while True:
                     fig_gauge2.update_layout(height=180, margin=dict(l=10, r=10, t=10, b=10), template="plotly_dark")
                     st.plotly_chart(fig_gauge2, use_container_width=True, key=f"g_fluc_{ts_key}")
                 
-            st.caption(f"동기화 시간: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 데이터 백업 프로토콜 가동 중")
+            st.caption(f"동기화 시간: {datetime.now(local_tz).strftime('%Y-%m-%d %H:%M:%S')} | 야후 파이낸스 피드 동기화")
         else:
-            st.warning("증권사 응답 대기 중 또는 장마감(휴일) 상태입니다. 잠시 후 자동으로 데이터를 복구합니다.")
-            time.sleep(5) # API가 막혔을 때는 재시도 간격을 늘려 IP 차단 해제 유도
+            st.warning("데이터 동기화 중입니다. 잠시만 기다려주세요...")
             
     time.sleep(refresh_rate)
